@@ -1,0 +1,19 @@
+# Python Standard
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# MacOS
+.DS_Store
+
+# Crawler Daten & Datenbanken (Nicht hochladen!)
+crawler/data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite.bak*
+
+# Log-Dateien
+*.log

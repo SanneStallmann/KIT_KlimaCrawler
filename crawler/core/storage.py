@@ -1,0 +1,438 @@
+# crawler/core/storage.py
+from __future__ import annotations
+
+import hashlib
+import os
+import socket
+import sqlite3
+import uuid
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Set, Tuple
+
+DB_PATH = Path("crawler/data/db/crawl.sqlite")
+RAW_DIR = Path("crawler/data/raw")
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def default_worker_id() -> str:
+    return f"{socket.gethostname()}:{os.getpid()}"
+
+
+@dataclass(frozen=True)
+class RawWriteResult:
+    doc_id: str
+    raw_hash: str
+    raw_path: str
+
+
+class Storage:
+    """
+    SQLite storage + content-addressed raw store (sha256).
+
+    - WAL + PRAGMAs
+    - batched transactions
+    - dedup raw writes (atomic)
+    - fast segment insert (OR IGNORE + executemany)
+    - distributed crawling via seed_jobs (claim/heartbeat/done/failed)
+    """
+
+    def __init__(self, db_path: Path = DB_PATH, raw_dir: Path = RAW_DIR) -> None:
+        self.db_path = Path(db_path)
+        self.raw_dir = Path(raw_dir)
+
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.raw_dir.mkdir(parents=True, exist_ok=True)
+
+        self.conn = sqlite3.connect(str(self.db_path))
+        self.conn.row_factory = sqlite3.Row
+
+        self.conn.execute("PRAGMA journal_mode=WAL;")
+        self.conn.execute("PRAGMA synchronous=NORMAL;")
+        self.conn.execute("PRAGMA temp_store=MEMORY;")
+        self.conn.execute("PRAGMA foreign_keys=ON;")
+        self.conn.execute("PRAGMA busy_timeout=5000;")
+        self.conn.execute("PRAGMA cache_size=-65536;")  # ~64MB
+
+        self._init_schema()
+
+        self._sql_insert_doc = """
+            INSERT INTO documents_raw (
+                document_id, municipality_id, url_canonical, url_final, fetched_at,
+                status_code, content_type, raw_hash, raw_path, raw_ext, content_length
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        self._sql_link_muni_doc = """
+            INSERT OR IGNORE INTO municipality_documents (municipality_id, document_id)
+            VALUES (?, ?)
+        """
+        self._sql_insert_segment = """
+            INSERT OR IGNORE INTO segments (
+                segment_id, document_id, order_index, segment_type, text, segment_hash, page_ref
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """
+        self._sql_mark_visited = """
+            INSERT INTO visited (url_canonical, last_fetch_at, last_status_code, last_error)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(url_canonical) DO UPDATE SET
+                last_fetch_at=excluded.last_fetch_at,
+                last_status_code=excluded.last_status_code,
+                last_error=excluded.last_error
+        """
+
+    def close(self) -> None:
+        try:
+            self.conn.close()
+        except Exception:
+            pass
+
+    def __enter__(self) -> "Storage":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
+    # -------------------------
+    # Schema init + migrations
+    # -------------------------
+
+    def _table_columns(self, table: str) -> Set[str]:
+        try:
+            cur = self.conn.execute(f"PRAGMA table_info({table})")
+            return {str(r[1]) for r in cur.fetchall()}
+        except Exception:
+            return set()
+
+    def _ensure_column(self, table: str, col: str, ddl_type: str) -> None:
+        cols = self._table_columns(table)
+        if col in cols:
+            return
+        self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl_type}")
+
+    def _init_schema(self) -> None:
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS documents_raw (
+                document_id     TEXT PRIMARY KEY,
+                municipality_id TEXT,
+                url_canonical   TEXT,
+                url_final       TEXT,
+                fetched_at      TEXT,
+                status_code     INTEGER,
+                content_type    TEXT,
+                raw_hash        TEXT,
+                raw_path        TEXT,
+                raw_ext         TEXT,
+                content_length  INTEGER
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_documents_raw_url_canonical
+            ON documents_raw(url_canonical);
+
+            CREATE TABLE IF NOT EXISTS segments (
+                segment_id   TEXT PRIMARY KEY,
+                document_id  TEXT NOT NULL,
+                order_index  INTEGER,
+                segment_type TEXT,
+                text         TEXT,
+                segment_hash TEXT,
+                page_ref     TEXT,
+                FOREIGN KEY(document_id) REFERENCES documents_raw(document_id) ON DELETE CASCADE
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_segment_dedup
+            ON segments(document_id, segment_hash);
+
+            CREATE TABLE IF NOT EXISTS visited (
+                url_canonical    TEXT PRIMARY KEY,
+                last_fetch_at    TEXT,
+                last_status_code INTEGER,
+                last_error       TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS municipality_documents (
+                municipality_id TEXT NOT NULL,
+                document_id     TEXT NOT NULL,
+                PRIMARY KEY (municipality_id, document_id),
+                FOREIGN KEY(document_id) REFERENCES documents_raw(document_id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_muni_docs_doc
+            ON municipality_documents(document_id);
+
+            -- Distributed seed work queue
+            CREATE TABLE IF NOT EXISTS seed_jobs (
+              municipality_id TEXT PRIMARY KEY,
+              seed_url        TEXT NOT NULL,
+
+              status          TEXT NOT NULL DEFAULT 'pending',  -- pending|claimed|done|failed
+              claimed_by      TEXT,
+              claimed_at      TEXT,
+              heartbeat_at    TEXT,
+              done_at         TEXT,
+              last_error      TEXT,
+
+              attempt_count   INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_seed_jobs_status
+            ON seed_jobs(status);
+
+            CREATE INDEX IF NOT EXISTS idx_seed_jobs_claimed_at
+            ON seed_jobs(claimed_at);
+            """
+        )
+
+        # Idempotent migration for DBs that were created before raw_ext/content_length existed.
+        # (ALTER TABLE ... ADD COLUMN is safe if column is missing; we guard via PRAGMA table_info.)
+        try:
+            self._ensure_column("documents_raw", "raw_ext", "TEXT")
+            self._ensure_column("documents_raw", "content_length", "INTEGER")
+        except Exception:
+            # best-effort: don't brick the crawler if migration fails in some environment
+            pass
+
+        self.conn.commit()
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        # sqlite handles commit/rollback in context manager
+        with self.conn:
+            yield
+
+    # -------------------------
+    # FetchResult adapters
+    # -------------------------
+
+    def _extract_body(self, fetch_result: Any) -> bytes:
+        body = getattr(fetch_result, "body", None)
+        if body is None:
+            body = getattr(fetch_result, "content", None)
+        if body is None:
+            return b""
+        if isinstance(body, (bytes, bytearray, memoryview)):
+            return bytes(body)
+        try:
+            return bytes(body)
+        except Exception:
+            return b""
+
+    def _extract_headers(self, fetch_result: Any) -> Dict[str, str]:
+        h = getattr(fetch_result, "headers", None)
+        if isinstance(h, dict):
+            return {str(k): str(v) for k, v in h.items()}
+        try:
+            if h is not None:
+                return {str(k): str(v) for k, v in dict(h).items()}
+        except Exception:
+            pass
+        return {}
+
+    # -------------------------
+    # Content typing
+    # -------------------------
+
+    @staticmethod
+    def _guess_ext(content_type: str, url_final: str) -> str:
+        ct = (content_type or "").lower()
+        url = (url_final or "").lower()
+
+        if "application/pdf" in ct or url.endswith(".pdf"):
+            return ".pdf"
+        if "text/html" in ct or "application/xhtml" in ct or url.endswith((".html", ".htm")):
+            return ".html"
+
+        # fallback; extend as needed (docx/xlsx/etc.)
+        return ".bin"
+
+    # -------------------------
+    # Core operations
+    # -------------------------
+
+    def store_raw(self, municipality_id: str, url_canonical: str, fetch_result: Any) -> str:
+        doc_id = str(uuid.uuid4())
+
+        body = self._extract_body(fetch_result)
+        raw_hash = hashlib.sha256(body).hexdigest()
+        raw_path = self.raw_dir / raw_hash
+
+        if not raw_path.exists():
+            tmp_path = self.raw_dir / f".{raw_hash}.{uuid.uuid4().hex}.tmp"
+            tmp_path.write_bytes(body)
+            os.replace(tmp_path, raw_path)
+
+        headers = self._extract_headers(fetch_result)
+
+        url_final = (
+            str(getattr(fetch_result, "url_final", "") or "")
+            or str(getattr(fetch_result, "url", "") or "")
+        )
+        status_code = int(getattr(fetch_result, "status_code", 0) or 0)
+        content_type = (
+            str(getattr(fetch_result, "content_type", "") or "")
+            or str(headers.get("Content-Type") or "")
+        )
+
+        raw_ext = self._guess_ext(content_type, url_final)
+        content_length = len(body)
+
+        self.conn.execute(
+            self._sql_insert_doc,
+            (
+                doc_id,
+                municipality_id,
+                url_canonical,
+                url_final,
+                _utc_now_iso(),
+                status_code,
+                content_type,
+                raw_hash,
+                str(raw_path),
+                raw_ext,
+                int(content_length),
+            ),
+        )
+        self.conn.execute(self._sql_link_muni_doc, (municipality_id, doc_id))
+        return doc_id
+
+    def link_document_to_municipality(self, municipality_id: str, document_id: str) -> None:
+        self.conn.execute(self._sql_link_muni_doc, (municipality_id, document_id))
+
+    def store_segments(self, document_id: str, segments: Iterable[Any]) -> int:
+        rows: List[Tuple[str, str, int, str, str, str, Optional[str]]] = []
+        sha256 = hashlib.sha256
+
+        for seg in segments:
+            text = str(getattr(seg, "text", "") or "")
+            norm = text.strip()
+            seg_hash = sha256(norm.encode("utf-8")).hexdigest()
+            rows.append(
+                (
+                    str(uuid.uuid4()),
+                    document_id,
+                    int(getattr(seg, "order_index", 0) or 0),
+                    str(getattr(seg, "segment_type", "") or ""),
+                    text,
+                    seg_hash,
+                    getattr(seg, "page_ref", None),
+                )
+            )
+
+        if not rows:
+            return 0
+
+        before = self.conn.total_changes
+        self.conn.executemany(self._sql_insert_segment, rows)
+        after = self.conn.total_changes
+        return max(0, after - before)
+
+    def mark_visited(self, url_canonical: str, status: int, error: Optional[str] = None) -> None:
+        self.conn.execute(self._sql_mark_visited, (url_canonical, _utc_now_iso(), int(status), error))
+
+    # -------------------------
+    # Queries
+    # -------------------------
+
+    def is_visited(self, url_canonical: str) -> bool:
+        cur = self.conn.execute("SELECT 1 FROM visited WHERE url_canonical=? LIMIT 1", (url_canonical,))
+        return cur.fetchone() is not None
+
+    def get_document_id_by_canonical_url(self, url_canonical: str) -> Optional[str]:
+        cur = self.conn.execute(
+            "SELECT document_id FROM documents_raw WHERE url_canonical=? LIMIT 1",
+            (url_canonical,),
+        )
+        row = cur.fetchone()
+        return str(row["document_id"]) if row else None
+
+    # -------------------------
+    # seed_jobs API (Option 2)
+    # -------------------------
+
+    def upsert_seed_jobs(self, seeds: Iterable[Tuple[str, str]]) -> int:
+        rows = [(str(m), str(u)) for (m, u) in seeds]
+        if not rows:
+            return 0
+        before = self.conn.total_changes
+        with self.conn:
+            self.conn.executemany(
+                """
+                INSERT INTO seed_jobs (municipality_id, seed_url, status, attempt_count)
+                VALUES (?, ?, 'pending', 0)
+                ON CONFLICT(municipality_id) DO UPDATE SET
+                    seed_url=excluded.seed_url
+                """,
+                rows,
+            )
+        after = self.conn.total_changes
+        return max(0, after - before)
+
+    def claim_next_seed_jobs(
+        self,
+        worker_id: Optional[str] = None,
+        limit: int = 1,
+    ) -> List[Tuple[str, str]]:
+        wid = worker_id or default_worker_id()
+        now = _utc_now_iso()
+        limit = max(1, int(limit))
+
+        with self.conn:
+            # atomically pick + claim
+            self.conn.execute(
+                """
+                UPDATE seed_jobs
+                SET status='claimed',
+                    claimed_by=?,
+                    claimed_at=?,
+                    heartbeat_at=?,
+                    attempt_count=attempt_count+1
+                WHERE municipality_id IN (
+                    SELECT municipality_id
+                    FROM seed_jobs
+                    WHERE status='pending'
+                    ORDER BY municipality_id
+                    LIMIT ?
+                )
+                """,
+                (wid, now, now, limit),
+            )
+
+            cur = self.conn.execute(
+                """
+                SELECT municipality_id, seed_url
+                FROM seed_jobs
+                WHERE status='claimed' AND claimed_by=?
+                ORDER BY claimed_at DESC
+                LIMIT ?
+                """,
+                (wid, limit),
+            )
+            return [(str(r["municipality_id"]), str(r["seed_url"])) for r in cur.fetchall()]
+
+    def heartbeat_seed_jobs(self, worker_id: Optional[str] = None) -> int:
+        wid = worker_id or default_worker_id()
+        now = _utc_now_iso()
+        with self.conn:
+            cur = self.conn.execute(
+                "UPDATE seed_jobs SET heartbeat_at=? WHERE status='claimed' AND claimed_by=?",
+                (now, wid),
+            )
+        return int(cur.rowcount or 0)
+
+    def finish_seed_job(self, municipality_id: str, ok: bool, error: Optional[str] = None) -> None:
+        now = _utc_now_iso()
+        status = "done" if ok else "failed"
+        with self.conn:
+            self.conn.execute(
+                """
+                UPDATE seed_jobs
+                SET status=?, done_at=?, last_error=?
+                WHERE municipality_id=?
+                """,
+                (status, now, error, str(municipality_id)),
+            )

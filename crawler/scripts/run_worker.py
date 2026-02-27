@@ -1,0 +1,150 @@
+# crawler/scripts/run_worker.py
+from __future__ import annotations
+
+import argparse
+import sqlite3
+import threading
+import time
+import logging
+from datetime import timedelta
+
+from crawler.core.engine import Engine, EngineLimits
+from crawler.core.seed_jobs import (
+    DEFAULT_CRAWL_DB_PATH,
+    claim_next_job,
+    default_worker_id,
+    heartbeat_job,
+    mark_done,
+    mark_failed,
+)
+from crawler.core.seeds import load_seeds_from_sqlite
+
+# --- Logging Setup ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler("worker.log", encoding="utf-8"),  # Schreibt in Datei
+        logging.StreamHandler()                               # Schreibt ins Terminal
+    ]
+)
+logger = logging.getLogger(__name__)
+
+HEARTBEAT_EVERY_SECONDS = 30.0
+
+# 1. Unsere neuen Klima-Keywords
+KLIMA_KEYWORDS = {
+    "positive": [
+        "klima", "klimaschutz", "energie", "umwelt", "nachhaltig", 
+        "waermeplanung", "wärmeplanung", "co2", "masterplan", 
+        "sanierung", "solarkataster"
+    ],
+    "negative": [
+        "impressum", "datenschutz", "kontakt", "sitemap", 
+        "barrierefreiheit", "leichte-sprache", "login", 
+        "buergerservice", "rathaus/service", "formulare"
+    ]
+}
+
+# 2. Die Industrial-Limits
+KLIMA_LIMITS = EngineLimits(
+    max_depth=5,                 
+    max_pages_per_muni=1000,     
+    max_file_size_mb=50          
+)
+
+def _heartbeat_loop(db_path: str, municipality_id: str, worker_id: str, stop: threading.Event) -> None:
+    con = sqlite3.connect(db_path, timeout=5.0)
+    try:
+        con.execute("PRAGMA busy_timeout=5000;")
+        con.execute("PRAGMA journal_mode=WAL;")
+        while not stop.wait(HEARTBEAT_EVERY_SECONDS):
+            try:
+                with con:
+                    heartbeat_job(con, municipality_id, worker_id)
+            except sqlite3.OperationalError:
+                pass
+            except Exception:
+                pass
+    finally:
+        con.close()
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--db", default=str(DEFAULT_CRAWL_DB_PATH))
+    ap.add_argument("--stale-after", type=int, default=15 * 60)
+    ap.add_argument("--limit", type=int, default=None, help="Anzahl der zu bearbeitenden Kommunen, danach beenden.")
+    args = ap.parse_args()
+
+    worker_id = default_worker_id()
+    _, allowed = load_seeds_from_sqlite()
+
+    engine = Engine(
+        keywords=KLIMA_KEYWORDS,  
+        limits=KLIMA_LIMITS,
+        allowed_domains_by_muni=allowed,
+    )
+
+    con = sqlite3.connect(args.db, timeout=5.0)
+    con.execute("PRAGMA busy_timeout=5000;")
+    con.execute("PRAGMA journal_mode=WAL;")
+
+    jobs_processed = 0
+    start_time = time.time()
+    
+    logger.info(f"🚀 Starte Worker {worker_id}")
+    if args.limit:
+        logger.info(f"🎯 Ziel-Limit: {args.limit} Kommunen")
+
+    try:
+        while True:
+            if args.limit and jobs_processed >= args.limit:
+                logger.info(f"✅ Limit von {args.limit} erreicht. Worker beendet sich regulär.")
+                break
+
+            with con:
+                job = claim_next_job(con, worker_id=worker_id, stale_after_seconds=args.stale_after)
+
+            if job is None:
+                logger.info("💤 Keine 'pending' Jobs gefunden. Beende Worker.")
+                break
+
+            stop = threading.Event()
+            hb = threading.Thread(
+                target=_heartbeat_loop,
+                args=(args.db, job.municipality_id, worker_id, stop),
+                daemon=True,
+            )
+            hb.start()
+
+            muni_start_time = time.time()
+            try:
+                logger.info(f"▶️ Starte Crawl für Gemeinde {job.municipality_id} ({job.seed_url})...")
+                with con:
+                    heartbeat_job(con, job.municipality_id, worker_id)
+
+                engine.run([(job.municipality_id, job.seed_url)])
+
+                with con:
+                    mark_done(con, job.municipality_id, worker_id)
+                
+                duration = timedelta(seconds=int(time.time() - muni_start_time))
+                logger.info(f"✅ Gemeinde {job.municipality_id} erfolgreich abgeschlossen in {duration}.")
+
+            except Exception as e:
+                with con:
+                    mark_failed(con, job.municipality_id, worker_id, str(e))
+                logger.error(f"❌ Fehler bei Gemeinde {job.municipality_id}: {e}", exc_info=True)
+
+            finally:
+                stop.set()
+                hb.join(timeout=2.0)
+                jobs_processed += 1
+
+    finally:
+        con.close()
+        total_time = timedelta(seconds=int(time.time() - start_time))
+        logger.info(f"🏁 Zusammenfassung: {jobs_processed} Kommunen verarbeitet in {total_time}.")
+
+if __name__ == "__main__":
+    main()
