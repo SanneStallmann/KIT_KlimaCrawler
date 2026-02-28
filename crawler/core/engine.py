@@ -16,9 +16,9 @@ from crawler.core.scheduler import PriorityScheduler
 from crawler.core.storage import Storage, default_worker_id
 
 try:
-    import crawler.core.traps as traps  # type: ignore
+    import crawler.core.traps as traps 
 except Exception:
-    traps = None  # type: ignore
+    traps = None  
 
 
 def _is_trap(url: str) -> bool:
@@ -36,10 +36,9 @@ def _is_trap(url: str) -> bool:
 
 @dataclass(frozen=True)
 class EngineLimits:
-    max_depth: int = 12  # Erhöht für tiefe RIS-Strukturen
-    max_pages_per_muni: int = 25000  # Erhöht für Vollständigkeit in großen Städten
-    max_file_size_mb: int = 100  # Erhöht für große Haushaltspläne/PDFs
-
+    max_depth: int = 12  
+    max_pages_per_muni: int = 25000  
+    max_file_size_mb: int = 100  
 
 class Engine:
     def __init__(
@@ -129,19 +128,15 @@ class Engine:
         """
         u = (url or "").lower()
         a = (anchor or "").lower()
-        score = 10  # Basis-Score für Entdeckung
+        score = 10  
 
-        # 1. Höchste Priorität: PDFs (Goldquelle für Paper)
         if ".pdf" in u:
             score += 300
 
-        # 2. Hohe Priorität: Ratsinformationssysteme (RIS)
-        # Typische Pfade für SessionNet, Allris, etc.
         ris_patterns = ['session', 'bi/vo', 'bi/si', 'bi/kp', 'allris', 'ratsinfo', 'ris.']
         if any(p in u for p in ris_patterns):
             score += 200
 
-        # 3. Inhaltliche Keywords (Klima, Finanzen, Bau)
         high_impact_keywords = [
             'klima', 'energie', 'wärme', 'solar', 'pv', 'wind', 'strom', 
             'förder', 'zuschuss', 'mittel', 'haushalt', 'finanz', 'euro',
@@ -155,13 +150,11 @@ class Engine:
             if a and kw in a:
                 score += 100
 
-        # 4. Standard Positive Keywords aus Konfiguration
         for kw in self.keywords.get("positive", []):
             k = str(kw).lower()
             if k and k in u: score += 10
             if k and a and k in a: score += 5
 
-        # 5. Negative Keywords (Noise reduzieren, aber Pfad nicht blockieren)
         for kw in self.keywords.get("negative", []):
             k = str(kw).lower()
             if k and k in u: score -= 50
@@ -309,8 +302,6 @@ class Engine:
                     if self._looks_like_html(task.url, fr.content_type):
                         parse_result = parse_html(fr, fr.url_final)
                         
-                        # High-Recall: Wir speichern Text, wenn er nicht komplett leer ist.
-                        # Filterung erfolgt später im LLM-Schritt.
                         if len(parse_result.segments) > 0:
                             self.storage.store_segments(doc_id, parse_result.segments)
 

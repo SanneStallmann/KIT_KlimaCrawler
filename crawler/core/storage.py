@@ -97,10 +97,6 @@ class Storage:
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
 
-    # -------------------------
-    # Schema init + migrations
-    # -------------------------
-
     def _table_columns(self, table: str) -> Set[str]:
         try:
             cur = self.conn.execute(f"PRAGMA table_info({table})")
@@ -188,26 +184,18 @@ class Storage:
             """
         )
 
-        # Idempotent migration for DBs that were created before raw_ext/content_length existed.
-        # (ALTER TABLE ... ADD COLUMN is safe if column is missing; we guard via PRAGMA table_info.)
         try:
             self._ensure_column("documents_raw", "raw_ext", "TEXT")
             self._ensure_column("documents_raw", "content_length", "INTEGER")
         except Exception:
-            # best-effort: don't brick the crawler if migration fails in some environment
             pass
 
         self.conn.commit()
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
-        # sqlite handles commit/rollback in context manager
         with self.conn:
             yield
-
-    # -------------------------
-    # FetchResult adapters
-    # -------------------------
 
     def _extract_body(self, fetch_result: Any) -> bytes:
         body = getattr(fetch_result, "body", None)
@@ -233,10 +221,6 @@ class Storage:
             pass
         return {}
 
-    # -------------------------
-    # Content typing
-    # -------------------------
-
     @staticmethod
     def _guess_ext(content_type: str, url_final: str) -> str:
         ct = (content_type or "").lower()
@@ -246,13 +230,7 @@ class Storage:
             return ".pdf"
         if "text/html" in ct or "application/xhtml" in ct or url.endswith((".html", ".htm")):
             return ".html"
-
-        # fallback; extend as needed (docx/xlsx/etc.)
         return ".bin"
-
-    # -------------------------
-    # Core operations
-    # -------------------------
 
     def store_raw(self, municipality_id: str, url_canonical: str, fetch_result: Any) -> str:
         doc_id = str(uuid.uuid4())
@@ -334,10 +312,6 @@ class Storage:
     def mark_visited(self, url_canonical: str, status: int, error: Optional[str] = None) -> None:
         self.conn.execute(self._sql_mark_visited, (url_canonical, _utc_now_iso(), int(status), error))
 
-    # -------------------------
-    # Queries
-    # -------------------------
-
     def is_visited(self, url_canonical: str) -> bool:
         cur = self.conn.execute("SELECT 1 FROM visited WHERE url_canonical=? LIMIT 1", (url_canonical,))
         return cur.fetchone() is not None
@@ -349,10 +323,6 @@ class Storage:
         )
         row = cur.fetchone()
         return str(row["document_id"]) if row else None
-
-    # -------------------------
-    # seed_jobs API (Option 2)
-    # -------------------------
 
     def upsert_seed_jobs(self, seeds: Iterable[Tuple[str, str]]) -> int:
         rows = [(str(m), str(u)) for (m, u) in seeds]
@@ -382,7 +352,6 @@ class Storage:
         limit = max(1, int(limit))
 
         with self.conn:
-            # atomically pick + claim
             self.conn.execute(
                 """
                 UPDATE seed_jobs

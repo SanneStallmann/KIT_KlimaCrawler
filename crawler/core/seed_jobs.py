@@ -82,7 +82,6 @@ def claim_next_job(
     stale_cutoff = time.time() - float(stale_after_seconds)
     stale_cutoff_iso = datetime.fromtimestamp(stale_cutoff, tz=timezone.utc).isoformat()
 
-    # We also return the previous claimed_by/status to distinguish claim vs reclaim.
     row = con.execute(
         """
         UPDATE seed_jobs

@@ -16,7 +16,7 @@ def parse_pdf(fetch_result: Any, url: str) -> ParseResult:
             ["pdftotext", "-layout", "-", "-"],
             input=fetch_result.body,
             capture_output=True,
-            timeout=30  # Timeout für riesige oder kaputte PDFs
+            timeout=30  
         )
         
         if proc.returncode != 0:
@@ -25,7 +25,6 @@ def parse_pdf(fetch_result: Any, url: str) -> ParseResult:
         
         full_text = proc.stdout.decode("utf-8", errors="replace")
         
-        # pdftotext trennt Seiten mit Form Feed (\x0c)
         pages = full_text.split('\x0c')
         segments = []
         

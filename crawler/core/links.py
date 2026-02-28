@@ -7,27 +7,14 @@ from urllib.parse import urljoin, urlsplit, urldefrag
 
 from bs4 import BeautifulSoup
 
-
 _WHITESPACE_RE = re.compile(r"\s+")
 _SCHEMES_BLOCK_RE = re.compile(r"^(?:mailto:|tel:|javascript:|data:)", re.IGNORECASE)
-
 
 @dataclass(frozen=True, slots=True)
 class Link:
     url: str
     anchor: str
-
-
 class LinkExtractor:
-    """
-    Extracts clean, crawlable links from HTML.
-
-    Design goals:
-    - normalize links (absolute, defragmented)
-    - conservative filtering (schemes, extensions, path patterns)
-    - optional domain allowlist (suffix match)
-    - stable dedup (seen set on normalized URL)
-    """
 
     def __init__(
         self,
@@ -45,15 +32,10 @@ class LinkExtractor:
             if p and str(p).strip()
         )
 
-    # ----------------------------
-    # Filters / Normalizers
-    # ----------------------------
-
     def _clean_anchor(self, text: str) -> str:
         return _WHITESPACE_RE.sub(" ", text or "").strip()
 
     def _normalize_url(self, base_url: str, href: str) -> str:
-        # absolute + remove fragment (/#section) because it explodes frontier but same resource
         abs_url = urljoin(base_url, href)
         abs_url, _ = urldefrag(abs_url)
         return abs_url.strip()
@@ -81,14 +63,8 @@ class LinkExtractor:
         return any(pat in path for pat in self.block_path_patterns)
 
     def _allowed_domain(self, host: str, allowed_domains: frozenset[str]) -> bool:
-        # host is already lowercased netloc; drop port if present
         host = host.split(":", 1)[0]
-        # allow exact match or suffix ".domain"
         return any(host == d or host.endswith("." + d) for d in allowed_domains)
-
-    # ----------------------------
-    # Public API
-    # ----------------------------
 
     def extract_links(
         self,
@@ -96,7 +72,6 @@ class LinkExtractor:
         base_url: str,
         allowed_domains: Optional[set[str]] = None,
     ) -> list[tuple[str, str]]:
-        # normalize allowlist once (fast + consistent)
         allow = (
             frozenset(d.strip().lower() for d in allowed_domains if d and d.strip())
             if allowed_domains
@@ -112,7 +87,6 @@ class LinkExtractor:
             if not href:
                 continue
 
-            # skip obvious non-navigations early
             if href.startswith("#") or _SCHEMES_BLOCK_RE.match(href):
                 continue
 
@@ -122,7 +96,6 @@ class LinkExtractor:
             if url in seen:
                 continue
 
-            # keep only http(s) with netloc
             if not self._is_http(url):
                 continue
 

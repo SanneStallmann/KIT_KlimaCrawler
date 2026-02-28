@@ -7,15 +7,12 @@ def split_db(source_db_path, num_splits=20):
         print(f"Fehler: {source_db_path} nicht gefunden!")
         return
 
-    # Verbindung zur Master-DB
     conn = sqlite3.connect(source_db_path)
     cursor = conn.cursor()
 
-    # Hole alle PENDING Jobs (außer München)
     cursor.execute("SELECT municipality_id FROM seed_jobs WHERE status = 'pending' ORDER BY municipality_id")
     all_pending = [row[0] for row in cursor.fetchall()]
     
-    # Hole München Daten
     cursor.execute("SELECT * FROM seed_jobs WHERE municipality_id = '09162000'")
     munich_data = cursor.fetchone()
 
@@ -42,20 +39,16 @@ def split_db(source_db_path, num_splits=20):
         db_path = os.path.join(pkg_path, "crawl.sqlite")
         new_conn = sqlite3.connect(db_path)
 
-        # Tabellenstruktur exakt kopieren
         for table in ["seed_jobs", "documents_raw", "segments"]:
             res = conn.execute(f"SELECT sql FROM sqlite_master WHERE type='table' AND name='{table}'").fetchone()
             if res:
                 new_conn.execute(res[0])
         
-        # Dynamische Fragezeichen-Liste für die Spaltenanzahl
         if munich_data:
             placeholders_munich = ','.join(['?'] * len(munich_data))
             new_conn.execute(f"INSERT INTO seed_jobs VALUES ({placeholders_munich})", munich_data)
         
-        # Subset einfügen
-        placeholders_subset = ','.join(['?'] * len(all_pending[0:1])) # Dummy für Struktur
-        # Da wir oben alle Spalten brauchen, ziehen wir die vollen Datensätze für das Subset
+        placeholders_subset = ','.join(['?'] * len(all_pending[0:1]))
         ids_subset = subset
         placeholders_ids = ','.join(['?'] * len(ids_subset))
         jobs_data = conn.execute(f"SELECT * FROM seed_jobs WHERE municipality_id IN ({placeholders_ids})", ids_subset).fetchall()

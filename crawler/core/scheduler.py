@@ -7,25 +7,15 @@ from typing import List, Optional
 
 from crawler.core.models import CrawlTask
 
-
 @dataclass(order=True, slots=True)
 class _HeapItem:
-    # ordering fields first (heapq uses tuple-like ordering on dataclasses with order=True)
     neg_priority: int
     depth: int
     seq: int
-    task: CrawlTask  # not part of ordering if placed last (still compared only if ties)
+    task: CrawlTask  
 
 
 class PriorityScheduler:
-    """
-    Priority queue for CrawlTask.
-
-    Ordering:
-      1) higher priority first  (stored as -priority)
-      2) lower depth first
-      3) FIFO among equals      (monotonic seq)
-    """
 
     __slots__ = ("_heap", "_seq")
 

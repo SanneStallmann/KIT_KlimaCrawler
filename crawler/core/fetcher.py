@@ -21,26 +21,16 @@ class FetcherConfig:
     accept_language: str = "de-DE,de;q=0.9,en;q=0.7"
     max_keepalive_connections: int = 100
     max_connections: int = 500
-    # If you crawl lots of flaky sites, disabling keep-alive reduces hang risk.
     force_connection_close: bool = False
 
 
 class Fetcher:
-    """
-    Async HTTP fetcher with:
-    - global + per-host concurrency control
-    - optional per-host minimum delay (politeness)
-    - normalized content-type
-    - predictable error surface (raises RuntimeError with stable labels)
-    """
 
     def __init__(self, cfg: FetcherConfig) -> None:
         self.cfg = cfg
 
         self.global_sem = asyncio.Semaphore(int(cfg.global_concurrency))
         self.per_host_limit = int(cfg.per_domain_concurrency)
-
-        # Use explicit connect/read timeouts; avoids "one big number" ambiguity.
         self.timeout = httpx.Timeout(
             connect=5.0,
             read=float(cfg.timeout_seconds),
@@ -86,7 +76,6 @@ class Fetcher:
             host = urlsplit(url).netloc.lower()
         except Exception:
             return ""
-        # drop port for rate limiting fairness
         return host.split(":", 1)[0]
 
     def _host_sem(self, host: str) -> asyncio.Semaphore:
@@ -108,7 +97,6 @@ class Fetcher:
             dt = now - last
             if dt < d:
                 await asyncio.sleep(d - dt)
-        # set after sleeping (so spacing is enforced)
         self._host_last_ts[host] = loop.time()
 
     @staticmethod
@@ -117,14 +105,6 @@ class Fetcher:
         return ct.split(";", 1)[0].strip().lower()
 
     async def fetch(self, url: str) -> FetchResult:
-        """
-        Fetch URL and return FetchResult.
-
-        Raises RuntimeError with stable prefixes:
-          - timeout:<Type>
-          - http_error:<Status>
-          - request_error:<Type>:<msg>
-        """
         if self._client is None:
             raise RuntimeError("Fetcher must be used as an async context manager.")
 
@@ -138,7 +118,6 @@ class Fetcher:
             except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.PoolTimeout) as e:
                 raise RuntimeError(f"timeout:{type(e).__name__}") from e
             except httpx.RequestError as e:
-                # includes DNS failures, connect errors, TLS errors, etc.
                 raise RuntimeError(f"request_error:{type(e).__name__}:{e}") from e
 
             ct = self._content_type(r.headers)

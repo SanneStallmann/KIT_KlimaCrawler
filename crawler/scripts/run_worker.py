@@ -19,7 +19,6 @@ from crawler.core.seed_jobs import (
 )
 from crawler.core.seeds import load_seeds_from_sqlite
 
-# --- Logging Setup ---
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -32,7 +31,6 @@ logger = logging.getLogger(__name__)
 
 HEARTBEAT_EVERY_SECONDS = 30.0
 
-# 1. Erweiterte Klima- & Finanz-Keywords für maximale Abdeckung (Recall)
 KLIMA_KEYWORDS = {
     "positive": [
         "klima", "klimaschutz", "energie", "waermeplanung", "wärmeplanung", 
@@ -47,11 +45,10 @@ KLIMA_KEYWORDS = {
     ]
 }
 
-# 2. Die Industrial-Limits (Synchronisiert mit der optimierten Engine)
 KLIMA_LIMITS = EngineLimits(
-    max_depth=12,                 # Tiefer graben für Ratsinformationssysteme
-    max_pages_per_muni=25000,     # Hohes Limit für vollständige Datensätze
-    max_file_size_mb=100          # Auch große Haushalts- und Wärmeplan-PDFs erfassen
+    max_depth=12,                 
+    max_pages_per_muni=25000,     
+    max_file_size_mb=100          
 )
 
 def _heartbeat_loop(db_path: str, municipality_id: str, worker_id: str, stop: threading.Event) -> None:
@@ -80,7 +77,6 @@ def main() -> None:
     worker_id = default_worker_id()
     _, allowed = load_seeds_from_sqlite()
 
-    # Initialisierung der Engine mit den neuen High-Recall Parametern
     engine = Engine(
         keywords=KLIMA_KEYWORDS,  
         limits=KLIMA_LIMITS,

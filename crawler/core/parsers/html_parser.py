@@ -46,11 +46,6 @@ def _is_http_url(url: str) -> bool:
 
 
 def _dedup_links(links: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    """
-    Deterministic de-duplication:
-    - keep first occurrence per canonical-ish absolute URL string
-    - preserves order (important for relevance heuristics upstream)
-    """
     out: list[tuple[str, str]] = []
     seen: set[str] = set()
     for u, a in links:
@@ -66,7 +61,6 @@ def parse_html(fetch_result: FetchResult, base_url: str) -> ParseResult:
     if not body:
         return ParseResult(text="", segments=[], out_links=[], meta={})
 
-    # Prefer lxml if installed (faster + more tolerant), otherwise fallback.
     try:
         soup = BeautifulSoup(body, "lxml")
     except Exception:
@@ -75,19 +69,15 @@ def parse_html(fetch_result: FetchResult, base_url: str) -> ParseResult:
         except Exception:
             return ParseResult(text="", segments=[], out_links=[], meta={})
 
-    # Remove non-content tags early (reduces noise for both segments + full_text)
     for tag in soup(DROP_TAGS):
         tag.decompose()
 
-    # Boilerplate removal (conservative)
     for tag in soup.find_all(DROP_SECTIONS):
         tag.decompose()
 
-    # ----- Segmentation -----
     segments: list[Segment] = []
     order = 0
 
-    # Micro-optimization: localize lookups
     min_len = int(MIN_SEGMENT_LENGTH)
 
     for tag in soup.find_all(["h1", "h2", "h3", "h4", "p", "li"]):
@@ -106,21 +96,17 @@ def parse_html(fetch_result: FetchResult, base_url: str) -> ParseResult:
         segments.append(Segment(order_index=order, segment_type=seg_type, text=txt))
         order += 1
 
-    # ----- Link extraction -----
     links: list[tuple[str, str]] = []
     for a in soup.find_all("a", href=True):
         href = str(a.get("href") or "").strip()
         if not href:
             continue
 
-        # Fast skip of common non-crawlable schemes/fragments
         if href.startswith(("mailto:", "tel:", "javascript:", "#")):
             continue
 
         abs_url = urljoin(base_url, href)
 
-        # Cheap normalization: collapse accidental multiple slashes in path part
-        # (keeps query/fragment untouched; canonicalizer does the heavy work later)
         try:
             p = urlsplit(abs_url)
             if p.path and "//" in p.path:
@@ -138,18 +124,14 @@ def parse_html(fetch_result: FetchResult, base_url: str) -> ParseResult:
 
     links = _dedup_links(links)
 
-    # ----- Meta + full text -----
     title_tag = soup.find("title")
     title = _clean_text(title_tag.get_text()) if title_tag else None
 
-    # get_text over entire doc can be heavy; but you use it downstream (LLM input).
-    # keep it, but after dropping boilerplate to reduce noise.
     full_text = _clean_text(soup.get_text(" ", strip=True))
 
     meta = {}
     if title:
         meta["title"] = title
-    # optional: preserve content-type for downstream routing
     if fetch_result.content_type:
         meta["content_type"] = fetch_result.content_type
 

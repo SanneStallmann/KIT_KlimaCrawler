@@ -9,8 +9,6 @@ from urllib.parse import urlparse
 
 DEFAULT_MUNI_SQLITE_PATH = Path("crawler/data/db/municipalities.sqlite")
 DEFAULT_CSV_PATH = Path("crawler/data/seeds/municipalities.csv")
-
-# This is the crawler DB (crawl.sqlite) where seed_jobs lives
 DEFAULT_CRAWL_DB_PATH = Path("crawler/data/db/crawl.sqlite")
 
 
@@ -26,9 +24,7 @@ def _norm_domain(domain: str) -> str:
     d = (domain or "").strip().lower()
     if not d:
         return ""
-    # drop port + trailing dot
     d = d.split(":", 1)[0].rstrip(".")
-    # sometimes CSV contains full URLs accidentally
     if "://" in d:
         try:
             d = urlparse(d).netloc.lower()
@@ -110,7 +106,6 @@ def load_seeds_from_sqlite(
             homepage,
         )
 
-    # slicing AFTER filtering invalids
     if start < 0:
         start = 0
     if end is None:
@@ -155,7 +150,6 @@ def load_seeds_from_csv(
             seeds_all.append((muni_id, homepage))
             allowed[muni_id] = _parse_allowed_domains(row.get("allowed_domains"), homepage)
 
-    # slicing AFTER filtering invalids
     if start < 0:
         start = 0
     if end is None:
@@ -212,8 +206,7 @@ def upsert_seed_jobs(
     print("upsert_seed_jobs -> crawl_db_path =", crawl_db_path)
     con = sqlite3.connect(str(crawl_db_path))
     try:
-        ensure_seed_jobs_schema(con)  # <-- CRITICAL: ensure table exists
-
+        ensure_seed_jobs_schema(con)  
         before = con.total_changes
         with con:
             con.executemany(

@@ -125,12 +125,9 @@ def normalize_ags(x: Any) -> str:
     s = as_str(x).strip()
     if not s:
         return ""
-    # Remove non-digits defensively (e.g. accidental formatting)
     s = re.sub(r"\D+", "", s)
-    # If someone provided 7 digits (e.g. '9162000'), pad to 8
     if re.fullmatch(r"\d{7}", s):
         s = s.zfill(8)
-    # Accept only 8 digits as valid final AGS
     return s if re.fullmatch(r"\d{8}", s) else ""
 
 
@@ -138,10 +135,8 @@ def normalize_http_url(url: str) -> str:
     u = (url or "").strip()
     if not u:
         return ""
-    # Wikidata sometimes stores protocol-relative URLs; normalize them
     if u.startswith("//"):
         u = "https:" + u
-    # Accept only http(s)
     try:
         p = urlparse(u)
     except Exception:
@@ -629,9 +624,7 @@ def write_municipalities_csv(path: Path, rows: list[MunicipalityRow]) -> None:
         w.writeheader()
         for r in rows:
             d = {k: getattr(r, k) for k in CSV_FIELDS}
-            # Hard guarantee: AGS always 8-digit string in output
             d["ags"] = normalize_ags(d.get("ags")) or ""
-            # Normalize domains to lowercase (stable)
             d["allowed_domains"] = "|".join(sorted({x.strip().lower() for x in (d.get("allowed_domains") or "").split("|") if x.strip()}))
             w.writerow(d)
     tmp.replace(path)
