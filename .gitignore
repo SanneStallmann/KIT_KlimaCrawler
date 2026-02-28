@@ -16,4 +16,7 @@ crawler/data/
 *.sqlite.bak*
 
 # Log-Dateien
+*.log*.sqlite
+crawler/data/db/
+crawler/data/raw/
 *.log
