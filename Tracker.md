@@ -7,14 +7,14 @@
 | Paket  | Status  | Bearbeiter |
 | :----- | :------ | :--------- |
 | pkg_01 | ⏳ Frei | Sven       |
-| pkg_02 | ⏳ Frei | Sven       |
-| pkg_03 | ⏳ Frei | Sven       |
-| pkg_04 | ⏳ Frei | Sven       |
-| pkg_05 | ⏳ Frei | Sven       |
-| pkg_06 | ⏳ Frei | Sven       |
-| pkg_07 | ⏳ Frei | Sven       |
-| pkg_08 | ⏳ Frei | Sven       |
-| pkg_09 | ⏳ Frei | Sven       |
+| pkg_02 | ⏳ Frei |            |
+| pkg_03 | ⏳ Frei |            |
+| pkg_04 | ⏳ Frei |            |
+| pkg_05 | ⏳ Frei |            |
+| pkg_06 | ⏳ Frei |            |
+| pkg_07 | ⏳ Frei |            |
+| pkg_08 | ⏳ Frei |            |
+| pkg_09 | ⏳ Frei |            |
 | pkg_10 | ⏳ Frei |            |
 | pkg_11 | ⏳ Frei |            |
 | pkg_12 | ⏳ Frei |            |
