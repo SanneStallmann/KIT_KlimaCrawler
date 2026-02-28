@@ -1,19 +1,21 @@
 # KIT KlimaCrawler 🌍
 
+Pipeline zur systematischen Erfassung von Energie- und Klimarichtlinien bayerischer Kommunen für die **GraphRAG-Analyse**.
+
 ---
 
 ## 🛠 Voraussetzungen
 
-- Python **3.9+** (empfohlen: 3.10)
+- Python 3.9+ (empfohlen: 3.10)
 - macOS, Linux oder Windows
 - Stabile Internetverbindung
-- Ausreichend Laufzeit (große Kommunen > 10h)
+- Ausreichend Laufzeit (Großstädte: > 10 Stunden)
 
 ---
 
 ## 📦 Setup & Installation
 
-### 1. Repository klonen
+### 1️⃣ Repository klonen
 
 ```bash
 git clone <repository-url>
@@ -22,64 +24,39 @@ cd KIT_KlimaCrawler
 
 ---
 
-### 2. Virtuelle Umgebung erstellen (empfohlen)
+### 2️⃣ Virtuelle Umgebung erstellen (wi2026)
 
-Erstellt einen lokalen Ordner namens **wi2026** in deinem Projektverzeichnis.
+#### Windows (PowerShell)
 
----
-
-## 🪟 Windows
-
-
-### PowerShell
-```bash
-Erstellen
+```powershell
 python -m venv wi2026
-```
-
-### Aktivieren
-```bash
 .\wi2026\Scripts\Activate.ps1
 ```
 
-### CMD
+#### Windows (CMD)
 
-```bash
+```cmd
 python -m venv wi2026
-```
-
-```bash
 wi2026\Scripts\activate
 ```
 
-## 🍎 macOS / 🐧 Linux
+#### macOS / Linux
 
 ```bash
-# Erstellen
 python3 -m venv wi2026
-```
-
-```bash
 source wi2026/bin/activate
 ```
 
-## Option 2: Anaconda / Miniconda (conda)
-
-Verwaltet virtuelle Umgebungen zentral im System.
-
-### Umgebung erstellen
-```bash
-conda create -n wi2026 python=3.11
-```
+#### Alternative: Conda
 
 ```bash
-### Aktivieren
+conda create -n wi2026 python=3.10 -y
 conda activate wi2026
 ```
 
 ---
 
-### 3. Abhängigkeiten installieren
+### 3️⃣ Abhängigkeiten installieren
 
 ```bash
 pip install -r requirements.txt
@@ -89,72 +66,94 @@ pip install -r requirements.txt
 
 ## 🏃‍♂️ Crawl starten
 
-Der Crawler arbeitet eine SQLite-Datenbank als Job-Queue ab (`seed_jobs`).
+Der Crawler verarbeitet die Job-Queue aus:
 
-### Standard-Start (eine Kommune)
+```
+crawler/data/db/crawl.sqlite
+```
+
+### Einzel-Lauf (eine Kommune)
 
 ```bash
 python3 -m crawler.scripts.run_worker --limit 1
 ```
 
-- `--limit 1` = verarbeitet eine Kommune
-- Erhöhen für Batch-Verarbeitung mehrerer Kommunen (limit 100)
+### Batch-Lauf (z. B. 100 Kommunen)
+
+```bash
+python3 -m crawler.scripts.run_worker --limit 100
+```
+
+---
+
+## 👯 Verteiltes Arbeiten (Sharding)
+
+Für paralleles Crawling Bayerns werden vorab aufgeteilte Datenbank-Pakete genutzt.
+
+1. **Paket laden**  
+   Lade einen Ordner (z. B. `pkg_05`) aus der Cloud.
+
+2. **Platzieren**  
+   Kopiere die enthaltene `crawl.sqlite` nach:
+   ```
+   crawler/data/db/
+   ```
+
+3. **Starten**  
+   Führe den Crawler aus, bis alle Jobs erledigt sind.
+
+4. **Upload**  
+   Benenne die Datei um in:
+   ```
+   pkg_05_DONE_Name.sqlite
+   ```
+   und lade sie wieder hoch.
 
 ---
 
 ## ☕ WICHTIG: Standby verhindern
 
-Tiefe Crawls können **mehrere Stunden** dauern.
-Geht der Rechner in den Standby, **stoppt der Crawl**.
+Wenn der Rechner in den Ruhezustand geht, stoppt der Crawl.
 
-### macOS (empfohlen)
+### macOS (Terminal-Trick)
 
 ```bash
 caffeinate -i python3 -m crawler.scripts.run_worker --limit 1
 ```
 
-Der Mac bleibt exakt so lange wach, wie der Crawl läuft.
-
-Alternative: App **Amphetamine**
-
----
+Der Mac bleibt wach, bis der Prozess endet.
 
 ### Windows
 
-Nutze eines der folgenden Tools:
-
-- **Caffeine**
-- **PowerToys → Awake**
+Nutze Tools wie:
+- Caffeine
+- PowerToys Awake
 
 ---
 
-## 📊 Crawl überwachen (optional)
+## 📊 Monitoring & Erfolgskontrolle
 
-Live-Check der extrahierten Dokumentsegmente:
+### Fortschritt prüfen
 
 ```bash
-sqlite3 crawler/data/db/crawl.sqlite \
-"SELECT segment_type, COUNT(*) FROM segments GROUP BY segment_type;"
+sqlite3 crawler/data/db/crawl.sqlite "SELECT segment_type, COUNT(*) FROM segments GROUP BY segment_type;"
 ```
 
----
+### Erfolgreicher Lauf
 
-## ✅ Erfolgreicher Lauf
-
-Ein erfolgreicher Crawl bedeutet:
-
-- `run_worker` beendet sich ohne Fehler
-- Neue Einträge in `crawl.sqlite`
-- PDFs und HTML-Segmente wurden extrahiert
+- `run_worker` beendet sich ohne Fehlermeldung
+- `seed_jobs.status` wechselt zu `done`
+- Neue Einträge in:
+  - `documents_raw`
+  - `segments`
 
 ---
 
-## ⚠ Typische Fehlerquellen
+## ⚠ Fehlerquellen
 
-- Rechner geht in Standby
-- VPN/Netzwerkabbruch
-- Fehlende PDF-Tools (pdftotext nicht installiert)
-- Abbruch durch manuelles Schließen des Terminals
+- **Netzwerk**: VPN-Abbruch oder instabiles WLAN
+- **Tools**: `pdftotext` muss im Systempfad verfügbar sein
+- **Standby**: Rechner ging während eines Langlaufs schlafen
 
 ---
 
@@ -163,8 +162,7 @@ Ein erfolgreicher Crawl bedeutet:
 ```bash
 git clone <repository-url>
 cd KIT_KlimaCrawler
-python3 -m venv venv
-source venv/bin/activate
+python3 -m venv venv && source venv/bin/activate  # macOS
 pip install -r requirements.txt
 caffeinate -i python3 -m crawler.scripts.run_worker --limit 1
 ```
