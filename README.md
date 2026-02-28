@@ -1,9 +1,9 @@
-````markdown
 # KIT KlimaCrawler 🌍
 
 ---
 
 ## 🛠 Voraussetzungen
+
 - Python **3.9+** (empfohlen: 3.10)
 - macOS, Linux oder Windows
 - Stabile Internetverbindung
@@ -18,7 +18,7 @@
 ```bash
 git clone <repository-url>
 cd KIT_KlimaCrawler
-````
+```
 
 ---
 
@@ -32,7 +32,7 @@ Erstellt einen lokalen Ordner namens **wi2026** in deinem Projektverzeichnis.
 
 ### PowerShell
 
-```powershell
+````powershell
 # Erstellen
 python -m venv wi2026
 
@@ -40,7 +40,7 @@ python -m venv wi2026
 ```powershell
 python -m venv wi2026
 .\wi2026\Scripts\Activate.ps1
-```
+````
 
 ```CMD
 
@@ -48,27 +48,34 @@ python -m venv wi2026
 wi2026\Scripts\activate
 # Aktivieren (CMD)
 wi2026\Scripts\activate
-````
+```
 
 macOS / Linux
 Bash
+
 # Erstellen
+
 python3 -m venv wi2026
 
 # Aktivieren
+
 source wi2026/bin/activate
 Option 2: Anaconda / Miniconda (conda)
 
 Verwaltet die Umgebung zentral in deinem System.
 
 Alle Betriebssysteme
+
 # Erstellen (mit spezifischer Python-Version)
+
 conda create --name wi2026 python=3.11
 
 # Aktivieren
+
 conda activate wi2026
 
 # Deaktivieren
+
 conda deactivate
 
 ---
@@ -91,8 +98,8 @@ Der Crawler arbeitet eine SQLite-Datenbank als Job-Queue ab (`seed_jobs`).
 python3 -m crawler.scripts.run_worker --limit 1
 ```
 
-* `--limit 1` = verarbeitet eine Kommune
-* Erhöhen für Batch-Verarbeitung mehrerer Kommunen (limit 100)
+- `--limit 1` = verarbeitet eine Kommune
+- Erhöhen für Batch-Verarbeitung mehrerer Kommunen (limit 100)
 
 ---
 
@@ -117,8 +124,8 @@ Alternative: App **Amphetamine**
 
 Nutze eines der folgenden Tools:
 
-* **Caffeine**
-* **PowerToys → Awake**
+- **Caffeine**
+- **PowerToys → Awake**
 
 ---
 
@@ -137,18 +144,18 @@ sqlite3 crawler/data/db/crawl.sqlite \
 
 Ein erfolgreicher Crawl bedeutet:
 
-* `run_worker` beendet sich ohne Fehler
-* Neue Einträge in `crawl.sqlite`
-* PDFs und HTML-Segmente wurden extrahiert
+- `run_worker` beendet sich ohne Fehler
+- Neue Einträge in `crawl.sqlite`
+- PDFs und HTML-Segmente wurden extrahiert
 
 ---
 
 ## ⚠ Typische Fehlerquellen
 
-* Rechner geht in Standby
-* VPN/Netzwerkabbruch
-* Fehlende PDF-Tools (pdftotext nicht installiert)
-* Abbruch durch manuelles Schließen des Terminals
+- Rechner geht in Standby
+- VPN/Netzwerkabbruch
+- Fehlende PDF-Tools (pdftotext nicht installiert)
+- Abbruch durch manuelles Schließen des Terminals
 
 ---
 
