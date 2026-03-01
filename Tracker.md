@@ -7,7 +7,7 @@
 | Paket  | Status  | Bearbeiter |
 | :----- | :------ | :--------- |
 | pkg_01 | ⏳ Frei | Sven       |
-| pkg_02 | ⏳ Frei |            |
+| pkg_02 | ⏳ Frei |  Sanne     |
 | pkg_03 | ⏳ Frei |            |
 | pkg_04 | ⏳ Frei |            |
 | pkg_05 | ⏳ Frei |            |
