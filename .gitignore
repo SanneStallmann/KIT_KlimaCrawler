@@ -1,22 +1,24 @@
-# Python Standard
+# System & Python
 __pycache__/
-*.py[cod]
 .venv/
-venv/
-.env
-
-# MacOS
 .DS_Store
 
-# Crawler Daten & Datenbanken (Nicht hochladen!)
-crawler/data/
-*.sqlite
+# --- DER WICHTIGSTE TEIL ---
+# Ignoriere die tausenden Rohdateien und Logs
+crawler/data/raw/
+crawler/data/logs/
+*.log
+*.json
+
+# --- DATENBANKEN ---
+# 1. Erst mal alles im Datenbank-Ordner ignorieren
+crawler/data/db/*
+
+# 2. Die Master-Liste aber ausdrücklich ERLAUBEN
+!crawler/data/db/municipalities.sqlite
+
+# 3. Deine aktive 1,7 GB Arbeits-DB und deren Müll ignorieren
+crawler/data/db/crawl.sqlite
 *.sqlite-wal
 *.sqlite-shm
-*.sqlite.bak*
-
-# Log-Dateien
-*.log*.sqlite
-crawler/data/db/
-crawler/data/raw/
-*.log
+crawler/data/db/*.bak*
