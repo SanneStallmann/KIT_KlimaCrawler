@@ -16,7 +16,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from crawler.core.canonical import Canonicalizer
 from crawler.core.models import CrawlTask, FetchResult
 from crawler.core.parsers.html_parser import parse_html
-from crawler.core.parsers.pdf_parser import parse_pdf  
+from crawler.core.parsers.pdf_parser import parse_pdf
 from crawler.core.scheduler import PriorityScheduler
 from crawler.core.storage import Storage, default_worker_id
 
@@ -24,7 +24,7 @@ _HIGH_IMPACT_WORDS = [
     r'klima\w*', r'klimaschutz\w*', r'klimaanpassung\w*', r'klimaneutral\w*',
     r'co2\b', r'thg\b', r'treibhausgas\w*', r'emission\w*', r'treibhausgasbilanz\w*',
     r'energiebericht\w*', r'klimabericht\w*', r'klimaschutzkonzept\w*', r'klimafahrplan\w*',
-    r'energie-?\s?und\s?klimakonzept\w*', r'energie\w*', r'erneuerbar\w*', r'fernw(?:ä|ae)rme\w*', 
+    r'energie-?\s?und\s?klimakonzept\w*', r'energie\w*', r'erneuerbar\w*', r'fernw(?:ä|ae)rme\w*',
     r'nahw(?:ä|ae)rme\w*', r'w(?:ä|ae)rmenetz\w*', r'bhkw\b', r'blockheizkraftwerk\w*', r'w(?:ä|ae)rmepump\w*',
     r'geotherm\w*', r'biogas\w*', r'wasserkraft\w*', r'wasserstoff\b', r'h2\b',
     r'solar\w*', r'photovoltaik\w*', r'pv\b', r'windkraft\w*', r'windenergie\w*',
@@ -35,7 +35,7 @@ _HIGH_IMPACT_WORDS = [
     r'nachverdichtung\w*', r'mobilit(?:ä|ae)t\w*', r'verkehr\w*', r'verkehrswende\w*', r'emobilit(?:ä|ae)t\w*',
     r'elektromobilit(?:ä|ae)t\w*', r'radverkehr\w*', r'radweg\w*', r'fahrrad\w*',
     r'verkehrsentwicklungsplan\w*', r'vep\b', r'lades(?:ä|ae)ul\w*', r'wallbox\w*',
-    r'ladinfrastruktur\w*', r'carsharing\w*', r'(?:ö|oe)pnv\b', r'f(?:ö|oe)rder\w*', 
+    r'ladinfrastruktur\w*', r'carsharing\w*', r'(?:ö|oe)pnv\b', r'f(?:ö|oe)rder\w*',
     r'zuschuss\w*', r'mittel\w*', r'finanz\w*', r'investition\w*',
     r'projekttr(?:ä|ae)ger\w*', r'f(?:ö|oe)rderprogramm\w*', r'bewilligungsbescheid\w*',
     r'eigenanteil\w*', r'nki\b', r'kfw\b', r'bafa\b', r'efre\b', r'eler\b',
@@ -51,6 +51,24 @@ _NEGATIVE_WORDS = [
 ]
 NEGATIVE_REGEX = re.compile(r'\b(?:' + '|'.join(_NEGATIVE_WORDS) + r')', re.IGNORECASE)
 
+def _segment_features(text: str) -> Tuple[int, int, int]:
+    """
+    Returns (impact_score, hit_count, is_negative) based on Engine's domain regex.
+    This score is meant to be simple, explainable, and stable for paper methodology.
+    """
+    t = text or ""
+    hits = len(HIGH_IMPACT_REGEX.findall(t))
+    neg = 1 if NEGATIVE_REGEX.search(t) else 0
+
+    # Strongly weight topical hits, penalize boilerplate-like segments.
+    score = 25 * hits - (80 if neg else 0)
+
+    # Slight preference for semantically richer segments.
+    score += min(len(t) // 250, 8)
+
+    return score, hits, neg
+
+
 try:
     from crawler.core.traps import TrapDetector
     _trap_detector = TrapDetector(
@@ -58,7 +76,7 @@ try:
         block_path_patterns=[
             '/kalender', 'veranstaltungen', 'termine', 'sitzungskalender',
             'monat=', 'jahr=', 'month=', 'year=', 'datum=',
-            'weinabend', 'kirchencafe', 'sprechstunde', 'jahreshauptversammlung', 
+            'weinabend', 'kirchencafe', 'sprechstunde', 'jahreshauptversammlung',
             'regio-cup', 'firmung', 'vereinsmeisterschaft',
             'print=', 'drucken=', 'ansicht=druck', 'type=print',
             'sort=', 'order=', 'orderby=', 'sortierung=',
@@ -83,9 +101,10 @@ def _is_trap(url: str, depth: int) -> bool:
 
 @dataclass(frozen=True)
 class EngineLimits:
-    max_depth: int = 12  
-    max_pages_per_muni: int = 25000  
-    max_file_size_mb: int = 200  
+    max_depth: int = 6
+    max_pages_per_muni: int = 15000
+    max_file_size_mb: int = 200
+
 
 class Engine:
     def __init__(
@@ -122,11 +141,10 @@ class Engine:
         )
 
         self._session = requests.Session()
-        
         adapter = HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=1)
-        self._session.mount('http://', adapter)
-        self._session.mount('https://', adapter)
-        
+        self._session.mount("http://", adapter)
+        self._session.mount("https://", adapter)
+
         self._session.headers.update(
             {
                 "User-Agent": user_agent,
@@ -147,12 +165,11 @@ class Engine:
     @staticmethod
     def _norm_domain(domain: str) -> str:
         d = (domain or "").strip().lower()
-        if not d: 
+        if not d:
             return ""
 
         if "://" in d or d.startswith("//"):
             try:
-                from urllib.parse import urlsplit
                 parsed = urlsplit(d if "://" in d else "http:" + d)
                 d = parsed.netloc
             except Exception:
@@ -182,17 +199,17 @@ class Engine:
         allowed = self.allowed_domains_by_muni.get(muni_id)
         if not allowed:
             return False
-        return domain in allowed 
+        return domain in allowed
 
     def score(self, url: str, anchor: Optional[str]) -> int:
         u = (url or "").lower()
         a = (anchor or "").lower()
-        score = 10  
+        score = 10
 
         if ".pdf" in u:
             score += 300
 
-        ris_patterns = ['session', 'bi/vo', 'bi/si', 'bi/kp', 'allris', 'ratsinfo', 'ris.']
+        ris_patterns = ["session", "bi/vo", "bi/si", "bi/kp", "allris", "ratsinfo", "ris."]
         if any(p in u for p in ris_patterns):
             score += 200
 
@@ -225,7 +242,7 @@ class Engine:
 
         lim_bytes = int(self.limits.max_file_size_mb) * 1024 * 1024
         body = b""
-        
+
         try:
             with self._session.get(
                 url,
@@ -233,19 +250,26 @@ class Engine:
                 allow_redirects=True,
                 headers={"Connection": "close"},
                 verify=False,
-                stream=True  # GANZ WICHTIG: Lade nur Header, stoppe bei zu großen Files!
+                stream=True,  # stream; enforce hard size limit below
             ) as resp:
-                
                 status = int(resp.status_code)
                 headers = {str(k): str(v) for k, v in (resp.headers or {}).items()}
                 content_type = str(resp.headers.get("Content-Type") or "") or None
                 url_final = str(resp.url)
-                
+
                 cl = headers.get("Content-Length")
                 if cl and cl.isdigit() and int(cl) > lim_bytes:
                     body = b""
                 else:
-                    body = resp.content
+                    data = bytearray()
+                    for chunk in resp.iter_content(chunk_size=1024 * 64):
+                        if not chunk:
+                            break
+                        data.extend(chunk)
+                        if len(data) > lim_bytes:
+                            data = bytearray()
+                            break
+                    body = bytes(data)
 
             return FetchResult(
                 url_final=url_final,
@@ -337,7 +361,7 @@ class Engine:
                 doc_id = self.storage.get_document_id_by_canonical_url(url_c)
                 if doc_id is not None:
                     self.storage.link_document_to_municipality(task.municipality_id, doc_id)
-                
+
                 if self.storage.is_visited_with_error(url_c):
                     print(f"[retry] {task.url} (previously errored)", flush=True)
                 else:
@@ -345,7 +369,6 @@ class Engine:
                     continue
 
             try:
-                t0 = time.time()
                 print(f"[fetch] depth={task.depth} muni={task.municipality_id} url={task.url}", flush=True)
 
                 fr = self.fetch(task.url)
@@ -368,20 +391,20 @@ class Engine:
 
                     if self._looks_like_html(task.url, fr.content_type):
                         parse_result = parse_html(fr, fr.url_final)
-                        
+
                         if len(parse_result.segments) > 0:
-                            self.storage.store_segments(doc_id, parse_result.segments)
+                            self.storage.store_segments_scored(doc_id, parse_result.segments, _segment_features)
 
                         next_depth = task.depth + 1
                         if next_depth <= max_depth:
                             for link in parse_result.out_links:
                                 link_url = getattr(link, "url", link[0] if isinstance(link, tuple) else link)
                                 anchor = getattr(link, "anchor", link[1] if isinstance(link, tuple) else "")
-                                
+
                                 link_c = canon(link_url)
                                 if not link_c or not self._is_allowed(task.municipality_id, link_c):
                                     continue
-                                
+
                                 prio = self.score(link_c, anchor)
                                 self.scheduler.enqueue(
                                     CrawlTask(
@@ -397,7 +420,9 @@ class Engine:
                     elif self._looks_like_pdf(task.url, fr.content_type):
                         print(f"[parse] Extrahiere PDF: {fr.url_final}", flush=True)
                         parse_result = parse_pdf(fr, fr.url_final)
-                        self.storage.store_segments(doc_id, parse_result.segments)
+
+                        if len(parse_result.segments) > 0:
+                            self.storage.store_segments_scored(doc_id, parse_result.segments, _segment_features)
 
                     self.storage.mark_visited(url_c, status)
 

@@ -1,131 +1,181 @@
 import sqlite3
-import json
-import time
+import re
+import textwrap
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Literal
-from pydantic import BaseModel, Field
-from openai import OpenAI
+from typing import Iterable, List, Tuple, Optional
 
-# ==========================================
-# KONFIGURATION
-# ==========================================
-# Für Pydantic Structured Outputs empfehlen wir OpenAI (gpt-4o-mini ist extrem günstig und schnell).
-# Falls du Ollama nutzt, musst du evtl. auf json_mode zurückgreifen, da Structured Outputs dort teils noch experimentell sind.
-client = OpenAI() # Greift automatisch auf die Umgebungsvariable OPENAI_API_KEY zu
-MODEL_NAME = "gpt-4o-mini" 
-DB_PATH = Path("crawler/data/db/crawl.sqlite")
 
-# ==========================================
-# DIE ONTOLOGIE FÜR DEIN PAPER (Pydantic Models)
-# ==========================================
-class Entity(BaseModel):
-    name: str = Field(description="Der Name der Entität, z.B. 'Freistaat Bayern', 'E-Ladesäulen Bahnhofstraße', 'PV-Anlage Grundschule'")
-    type: Literal["Akteur", "Infrastruktur", "Förderprogramm", "Konzept/Ziel", "Dokument"] = Field(description="Die Art des Knotens im Graphen")
-    category: Literal["Mobilität", "Wärme", "Strom", "Finanzen", "Governance", "Sonstiges"] = Field(description="Das übergeordnete Nachhaltigkeitsthema")
-    status: Literal["Geplant", "In Umsetzung", "Abgeschlossen", "Existierend", "Unbekannt"] = Field(description="Der aktuelle Status des Projekts oder der Infrastruktur")
-    metrics: dict[str, str] = Field(description="Wichtige Metriken als Key-Value-Paare, z.B. {'anzahl': '5', 'kosten_euro': '20000', 'leistung_kwp': '100'}. Leer lassen, wenn keine Metriken im Text stehen.", default_factory=dict)
+# ---------- ANSI colors (optional) ----------
+COLOR_MONEY = "\033[92m"
+COLOR_ORG = "\033[96m"
+COLOR_RESET = "\033[0m"
 
-class Relationship(BaseModel):
-    source_entity: str = Field(description="Der Name der ausgehenden Entität (muss in der Entity-Liste existieren)")
-    relation_type: Literal["FÖRDERT", "BAUT", "BESCHLIESST", "GEHÖRT_ZU", "KOOPERIERT_MIT", "BEZIEHT_SICH_AUF"] = Field(description="Die Art der Beziehung (die Kante im Graphen)")
-    target_entity: str = Field(description="Der Name der Zielentität (muss in der Entity-Liste existieren)")
-    evidence: str = Field(description="Ein kurzer Belegsatz aus dem Text, der diese Beziehung beweist (wichtig für die Nachvollziehbarkeit im Paper)")
 
-class KnowledgeGraph(BaseModel):
-    entities: List[Entity] = Field(description="Liste aller extrahierten Knoten")
-    relationships: List[Relationship] = Field(description="Liste aller Beziehungen zwischen den Knoten")
+# ---------- Patterns ----------
+# Money: "12.500 €", "12.500,00 Euro", "2 Mio €", "3,5 Mrd Euro", "800 Tsd."
+MONEY_RE = re.compile(
+    r"""
+    (?:
+        \b\d{1,3}(?:\.\d{3})*(?:,\d+)?\s*(?:€|euro)\b
+        |
+        \b\d+(?:[.,]\d+)?\s*(?:mio|mio\.|tsd|tsd\.|mrd|mrd\.)\s*(?:€|euro)?\b
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
 
-# ==========================================
-# DATENBANK & EXTRAKTION
-# ==========================================
-def setup_database(cursor):
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS graph_triplets (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            municipality_id TEXT,
-            document_id TEXT,
-            segment_rowid INTEGER,
-            graph_json TEXT,
-            extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
+# Funding/finance trigger words
+FINANCE_TRIGGERS_RE = re.compile(
+    r"\b(förder\w*|zuschuss\w*|invest\w*|finanz\w*|mittel\w*|haushalt\w*|kfw\b|bafa\b|efre\b|eler\b|eu[- ]?förder\w*|bund\b|land\b)\b",
+    re.IGNORECASE,
+)
 
-def get_unprocessed_segments(cursor, limit=5):
-    # Wir filtern grob nach Signalwörtern, um Token-Kosten zu sparen
+# Actor/org hints (very rough, just for highlighting)
+ORG_RE = re.compile(
+    r"\b(gmbh|ag|e\.v\.|verein|genossenschaft|stiftung|stadtwerk\w*|landkreis|gemeinde|ministerium|bund|freistaat)\b",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class Candidate:
+    municipality_id: str
+    document_id: str
+    url_final: str
+    segment_rowid: int
+    impact_score: int
+    text: str
+
+
+def highlight_text(text: str, *, use_color: bool = True) -> str:
+    if not use_color:
+        return text
+
+    text = MONEY_RE.sub(lambda m: f"{COLOR_MONEY}{m.group(0)}{COLOR_RESET}", text)
+    text = ORG_RE.sub(lambda m: f"{COLOR_ORG}{m.group(0)}{COLOR_RESET}", text)
+    # highlight finance triggers too (same color as org)
+    text = FINANCE_TRIGGERS_RE.sub(lambda m: f"{COLOR_ORG}{m.group(0)}{COLOR_RESET}", text)
+    return text
+
+
+def fetch_finance_candidates(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = 20,
+    min_len: int = 160,
+    min_score: int = 15,
+    per_doc: int = 2,
+) -> List[Candidate]:
+    """
+    Uses the crawler-scored fields:
+      - segments.impact_score
+      - segments.is_negative
+    plus finance triggers (regex-ish via LIKE / cheap prefilter).
+    """
+    # Fast SQL prefilter (cheap), final highlighting is regex on Python side.
     query = """
-        SELECT s.rowid, d.municipality_id, d.document_id, s.text 
-        FROM segments s
-        JOIN documents_raw d ON s.document_id = d.document_id
-        WHERE (s.text LIKE '%Klima%' OR s.text LIKE '%Energie%' OR s.text LIKE '%Rad%' OR s.text LIKE '%Solar%' OR s.text LIKE '%Wärme%' OR s.text LIKE '%Ladesäule%')
-          AND s.rowid NOT IN (SELECT segment_rowid FROM graph_triplets)
-        LIMIT ?;
-    """
-    cursor.execute(query, (limit,))
-    return cursor.fetchall()
-
-def extract_graph_data(text: str) -> Optional[str]:
-    prompt = f"""
-    Du bist ein wissenschaftlicher Assistent. Extrahiere aus dem folgenden Text alle Entitäten und Beziehungen zum Thema kommunale Klimapolitik, Nachhaltigkeit und Infrastruktur.
-    Ignoriere irrelevante Informationen. Wenn der Text keine verwertbaren Fakten enthält, gib leere Listen zurück.
-    
-    Text:
-    {text}
-    """
-    try:
-        # Die Magie: Wir nutzen client.beta.chat.completions.parse, um das Pydantic-Schema zu erzwingen!
-        response = client.beta.chat.completions.parse(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": "Du extrahierst strikt strukturierte Daten für einen Knowledge Graph."},
-                {"role": "user", "content": prompt}
-            ],
-            response_format=KnowledgeGraph,
-            temperature=0.0
+    WITH ranked AS (
+      SELECT
+        s.rowid AS segment_rowid,
+        d.municipality_id,
+        d.document_id,
+        COALESCE(d.url_final, d.url_canonical) AS url_final,
+        s.text,
+        COALESCE(s.impact_score, 0) AS impact_score,
+        ROW_NUMBER() OVER (
+          PARTITION BY s.document_id
+          ORDER BY COALESCE(s.impact_score, 0) DESC
+        ) AS rn
+      FROM segments s
+      JOIN documents_raw d ON d.document_id = s.document_id
+      WHERE length(s.text) >= ?
+        AND COALESCE(s.is_negative, 0) = 0
+        AND COALESCE(s.impact_score, 0) >= ?
+        -- cheap finance prefilter (avoid regex in SQL)
+        AND (
+          s.text LIKE '%€%' OR s.text LIKE '%Euro%' OR s.text LIKE '%Mio%' OR s.text LIKE '%Mrd%' OR s.text LIKE '%Tsd%'
         )
-        # Pydantic-Objekt als sauberes JSON zurückgeben
-        return response.choices[0].message.content
-    except Exception as e:
-        print(f"⚠️ LLM Fehler: {e}")
-        return None
+        AND (
+          s.text LIKE '%Förder%' OR s.text LIKE '%Zuschuss%' OR s.text LIKE '%Invest%' OR s.text LIKE '%Haushalt%' OR
+          s.text LIKE '%KfW%' OR s.text LIKE '%BAFA%' OR s.text LIKE '%EFRE%' OR s.text LIKE '%ELER%' OR
+          s.text LIKE '%EU%' OR s.text LIKE '%Bund%' OR s.text LIKE '%Land%'
+        )
+    )
+    SELECT municipality_id, document_id, url_final, segment_rowid, impact_score, text
+    FROM ranked
+    WHERE rn <= ?
+    ORDER BY impact_score DESC
+    LIMIT ?;
+    """
 
-def main():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    setup_database(cursor)
-    conn.commit()
+    cur = conn.cursor()
+    cur.execute(query, (min_len, min_score, per_doc, limit))
+    rows = cur.fetchall()
 
-    segments = get_unprocessed_segments(cursor, limit=5)
-    if not segments:
-        print("✅ Keine neuen Segmente für den Graphen gefunden.")
+    out: List[Candidate] = []
+    for muni_id, doc_id, url_final, rowid, score, text in rows:
+        out.append(
+            Candidate(
+                municipality_id=str(muni_id),
+                document_id=str(doc_id),
+                url_final=str(url_final),
+                segment_rowid=int(rowid),
+                impact_score=int(score or 0),
+                text=str(text or ""),
+            )
+        )
+    return out
+
+
+def analyze_finances(
+    *,
+    db_path: Path = Path("crawler/data/db/crawl.sqlite"),
+    limit: int = 15,
+    min_len: int = 160,
+    min_score: int = 15,
+    per_doc: int = 2,
+    wrap_width: int = 100,
+    use_color: bool = True,
+) -> None:
+    if not db_path.exists():
+        print(f"❌ Datenbank nicht gefunden unter: {db_path}")
         return
 
-    print(f"🚀 Starte Graph-Extraktion für {len(segments)} Segmente...\n")
+    conn = sqlite3.connect(str(db_path), timeout=60.0, isolation_level=None)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA busy_timeout=60000;")
 
-    for rowid, muni_id, doc_id, text in segments:
-        print(f"⚙️ Verarbeite Gemeinde: {muni_id} | Segment: {rowid}")
-        
-        json_result = extract_graph_data(text)
-        
-        if json_result:
-            try:
-                parsed = json.loads(json_result)
-                e_count = len(parsed.get('entities', []))
-                r_count = len(parsed.get('relationships', []))
-                print(f"   🟢 Gefunden: {e_count} Knoten (Entities) | {r_count} Kanten (Relationships)")
-                
-                # Speichern in die neue, saubere Tabelle
-                cursor.execute("""
-                    INSERT INTO graph_triplets (municipality_id, document_id, segment_rowid, graph_json)
-                    VALUES (?, ?, ?, ?)
-                """, (muni_id, doc_id, rowid, json_result))
-                conn.commit()
-            except json.JSONDecodeError:
-                print("   🔴 Fehler beim Parsen des LLM-Ergebnisses.")
-        
-        time.sleep(1) # API Rate Limit schonen
+        cands = fetch_finance_candidates(
+            conn,
+            limit=limit,
+            min_len=min_len,
+            min_score=min_score,
+            per_doc=per_doc,
+        )
+    finally:
+        conn.close()
 
-    conn.close()
-    print("\n🏁 Lauf abgeschlossen.")
+    print("\n" + "=" * 90)
+    print(f"💰 FINANZ-EXPLORER: {len(cands)} Kandidaten (score≥{min_score}, len≥{min_len}, per_doc={per_doc})")
+    print("=" * 90 + "\n")
+
+    if not cands:
+        print("Keine Kandidaten gefunden. Entweder fehlen Scores (Crawler nicht gepatcht) oder thresholds zu hart.")
+        return
+
+    for c in cands:
+        print(f"📍 muni={c.municipality_id}  doc={c.document_id}  rowid={c.segment_rowid}  score={c.impact_score}")
+        print(f"🔗 Quelle: {c.url_final}")
+        print("-" * 90)
+
+        clean_text = " ".join(c.text.split())
+        highlighted = highlight_text(clean_text, use_color=use_color)
+        print(textwrap.fill(highlighted, width=wrap_width))
+        print("\n" + "=" * 90 + "\n")
+
 
 if __name__ == "__main__":
-    main()
+    analyze_finances(limit=15, min_len=160, min_score=15, per_doc=2, wrap_width=110, use_color=True)

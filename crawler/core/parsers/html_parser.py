@@ -18,8 +18,10 @@ DROP_TAGS_AND_SECTIONS = ["script", "style", "noscript", "svg", "nav", "footer",
 _RE_WS = re.compile(r"\s+")
 _RE_MULTI_SLASH = re.compile(r"/{2,}")
 
+
 def _clean_text(text: str) -> str:
     return _RE_WS.sub(" ", text or "").strip()
+
 
 def parse_html(fetch_result: FetchResult, base_url: str) -> ParseResult:
     body = fetch_result.body or b""
@@ -59,7 +61,7 @@ def parse_html(fetch_result: FetchResult, base_url: str) -> ParseResult:
 
     links: list[tuple[str, str]] = []
     seen: set[str] = set()
-    
+
     for a in soup.find_all("a", href=True):
         href = str(a.get("href") or "").strip()
         if not href or href.startswith(("mailto:", "tel:", "javascript:", "#")):
@@ -79,7 +81,7 @@ def parse_html(fetch_result: FetchResult, base_url: str) -> ParseResult:
             continue
         seen.add(abs_url)
 
-        if "//" in abs_url[8:]:  # 8: überspringt "https://"
+        if "//" in abs_url[8:]:  # 8: skip "https://"
             try:
                 p = urlsplit(abs_url)
                 if p.path and "//" in p.path:
