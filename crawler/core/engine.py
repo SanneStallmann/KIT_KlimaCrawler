@@ -102,7 +102,7 @@ def _is_trap(url: str, depth: int) -> bool:
 @dataclass(frozen=True)
 class EngineLimits:
     max_depth: int = 6
-    max_pages_per_muni: int = 15000
+    max_pages_per_muni: int = 2000
     max_file_size_mb: int = 200
 
 
