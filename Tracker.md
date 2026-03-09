@@ -10,7 +10,7 @@
 | pkg_02 | ⏳ Frei | SanneStallmann |
 | pkg_03 | ⏳ Frei | INT         |
 | pkg_04 | ⏳ Frei | Sven           |
-| pkg_05 | ⏳ Frei |                |
+| pkg_05 | ⏳ Frei | Sanne               |
 | pkg_06 | ⏳ Frei |                |
 | pkg_07 | ⏳ Frei |                |
 | pkg_08 | ⏳ Frei |                |
