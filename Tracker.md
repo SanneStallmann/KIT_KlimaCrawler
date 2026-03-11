@@ -11,9 +11,9 @@
 | pkg_03 | ⏳ Frei | INT         |
 | pkg_04 | ⏳ Frei | Sven           |
 | pkg_05 | ⏳ Frei | Sanne               |
-| pkg_06 | ⏳ Frei |                |
-| pkg_07 | ⏳ Frei |                |
-| pkg_08 | ⏳ Frei |                |
+| pkg_06 | ⏳ Frei | Sanne               |
+| pkg_07 | ⏳ Frei | Sanne               |
+| pkg_08 | ⏳ Frei | Sanne               |
 | pkg_09 | ⏳ Frei |                |
 | pkg_10 | ⏳ Frei | mlamlamla      |
 | pkg_11 | ⏳ Frei |                |
